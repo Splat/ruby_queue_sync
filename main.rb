@@ -3,6 +3,7 @@ require_relative 'consumer'
 
 semaphore = Mutex.new
 queue = Queue.new
+threads = [] # create a threadpool
 
 producer = Thread.new do
   100.times do |i|
@@ -14,26 +15,30 @@ producer = Thread.new do
     puts "produced - #{item.to_s}"
   end
 end
+threads << producer
 
-consumer = Thread.new do
-  consumer = Consumer.new
+# lets add some more consumers
+3.times do
+  consumer = Thread.new do
+    consumer = Consumer.new
   
-  loop do
-    job = nil
+    loop do
+      job = nil
     
-    semaphore.synchronize {
-      job = queue.pop unless queue.empty?
-    }
-    # process or wait outside the lock
-    unless job.nil?
-      consumer.process job
-    else
-      puts "consumer sleeping - queue currently empty"
-      sleep(1)
+      semaphore.synchronize {
+        job = queue.pop unless queue.empty?
+      }
+      # process or wait outside the lock
+      unless job.nil?
+        consumer.process job
+      else
+        puts "consumer sleeping - queue currently empty"
+        sleep(1)
+      end
     end
   end
+  threads << consumer # add new consumer to the threadpool
 end
-
 # there is a better solution here where the monitor
 # would peek to see if the queue is behind and the 
 # peek and pop operations would have a lock around
@@ -65,8 +70,6 @@ monitor = Thread.new do
     sleep(1)
   end
 end                                 
-
-threads = []
-threads << consumer
 threads << monitor
+
 threads.each { |thread| thread.join }
