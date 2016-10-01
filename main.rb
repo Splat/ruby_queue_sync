@@ -1,39 +1,34 @@
 require 'thread'
+require_relative 'consumer'
 
+semaphore = Mutex.new
 queue = Queue.new
-puts 'made Queue'
 
 producer = Thread.new do
-  10.times do |i|
-    sleep rand(i) # simulate expense
-    # lets assume the producer sends the published
-    # time stamps in seconds or an eventual Queue
-    # extension override on push would handle this
-    # hash creation. 
-    queue << {num:i, ts: Time.now.sec}
-    puts "#{i} produced"
+  100.times do |i|
+    sleep rand(3) # simulate time between production
+    # lets assume the producer sends the published time stamp
+    # this would eventually be handled my queue extension on push
+    item = {num:i, ts: Time.now.to_i}
+    queue << item
+    puts "produced - #{item.to_s}"
   end
 end
 
-# simulates normal consumption... longer running
-def consume(value)
- sleep(5) # simulate slow computation
- puts "consumed #{value.to_s}"
-end
-
-# simulates priority consumption... fast and expensive
-def priority_consume(value)
- sleep(1) # simulate BLAZING computation
- puts "priority consumed #{value.to_s}"
-end
-
 consumer = Thread.new do
-  # empty wouldn't be bounded and instead be sleep in prod
-  while true 
-    if not queue.empty?
-      consume queue.pop
+  consumer = Consumer.new
+  
+  loop do
+    job = nil
+    
+    semaphore.synchronize {
+      job = queue.pop unless queue.empty?
+    }
+    # process or wait outside the lock
+    unless job.nil?
+      consumer.process job
     else
-      puts "queue currently empty"
+      puts "consumer sleeping - queue currently empty"
       sleep(1)
     end
   end
@@ -45,35 +40,33 @@ end
 # them. However extending the Queue class to do this
 # and test across many threads is a bit much for this
 # proof of concept. 
-#
-# the monitor thread essentially pops just like the 
-# consumer thread but sleeps the time of the popped 
-# itemminus the threshold that's acceptable. If the 
-# item is within bounds it processes like a consumer
-# and if not it offloads to the high priority process.
 monitor = Thread.new do
-  while true
-    if not queue.empty?
-      # here is where the lock/mutex would force the
-      # normal consumer to wait while peeking
-      value = queue.pop
-      if (Time.now.sec - value[:ts]) > 1
-        priority_consume value
+  monitor_consumer = MonitorConsumer.new
+  behind_threshold = 0.5 # seconds denoting behind. problem asks for 60 seconds but this is to illustrate
+
+  loop do
+    job = nil
+    # check needs a lock in case popped after empty check
+    semaphore.synchronize { 
+      job = queue.pop unless queue.empty?
+    }
+    
+    if job # attempt to process outside the mutex
+      if Time.now.to_i - job[:ts] > behind_threshold # check if processing is behind
+        monitor_consumer.process job, true
+        next # since we are behind go right to the next loop
       else
-        # instead we will act as a normal consumer
-        consume value
+        monitor_consumer.process job
       end
-    else
-      puts "queue currently empty"
-      sleep(1)
     end
+
+    # if we get here the job wasn't priority so we can sleep outside mutex
+    puts "monitor sleeping - queue currently empty"
+    sleep(1)
   end
 end                                 
 
-consumer.join
-monitor.join
-
-#threads = []
-#threads << consumer
-#threads << monitor
-#threads.each { |thread| thread.join }
+threads = []
+threads << consumer
+threads << monitor
+threads.each { |thread| thread.join }
